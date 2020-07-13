@@ -1,8 +1,12 @@
 package resourceapply
 
 import (
+	"context"
+
 	"github.com/openshift/library-go/pkg/operator/events"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
@@ -17,15 +21,21 @@ import (
 func ApplyMutatingWebhookConfiguration(client dynamic.Interface, recorder events.Recorder,
 	requiredOriginal *admissionregistrationv1.MutatingWebhookConfiguration, expectedGeneration int64) (*admissionregistrationv1.MutatingWebhookConfiguration, bool, error) {
 
-	// Explcitily specify type for requiredUnstr to get object meta accessor
-	requiredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(requiredOriginal)
-	if err != nil {
+	gvr := admissionregistrationv1.SchemeGroupVersion.WithResource("mutatingwebhookconfigurations")
+	resourcedClient := client.Resource(gvr)
+
+	required := requiredOriginal.DeepCopy()
+	if err := copyMutatingWebhookCABundle(resourcedClient, required); err != nil {
 		return nil, false, err
 	}
 
-	gvr := admissionregistrationv1.SchemeGroupVersion.WithResource("mutatingwebhookconfigurations")
+	// Explcitily specify type for requiredUnstr to get object meta accessor
+	requiredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(required)
+	if err != nil {
+		return nil, false, err
+	}
 	requiredUnstr := &unstructured.Unstructured{Object: requiredObj}
-	resourcedClient := client.Resource(gvr)
+
 	actualUnstr, modified, err := applyUnstructured(resourcedClient, "MutatingWebhookConfiguration", recorder, requiredUnstr, expectedGeneration)
 	if err != nil {
 		return nil, modified, err
@@ -38,6 +48,35 @@ func ApplyMutatingWebhookConfiguration(client dynamic.Interface, recorder events
 	return actual, modified, nil
 }
 
+func copyMutatingWebhookCABundle(resourceClient dynamic.ResourceInterface, required *admissionregistrationv1.MutatingWebhookConfiguration) error {
+	existingUnstr, err := resourceClient.Get(context.TODO(), required.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	existing := &admissionregistrationv1.MutatingWebhookConfiguration{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(existingUnstr.Object, existing); err != nil {
+		return err
+	}
+
+	existingMutatingWebhooks := make(map[string]admissionregistrationv1.MutatingWebhook)
+	for _, mutatingWebhook := range existing.Webhooks {
+		existingMutatingWebhooks[mutatingWebhook.Name] = mutatingWebhook
+	}
+
+	webhooks := make([]admissionregistrationv1.MutatingWebhook, len(required.Webhooks))
+	for i, mutatingWebhook := range required.Webhooks {
+		if webhook, ok := existingMutatingWebhooks[mutatingWebhook.Name]; ok {
+			mutatingWebhook.ClientConfig.CABundle = webhook.ClientConfig.CABundle
+		}
+		webhooks[i] = mutatingWebhook
+	}
+	required.Webhooks = webhooks
+	return nil
+}
+
 // ApplyValidatingWebhookConfiguration ensures the form of the specified
 // validatingwebhookconfiguration is present in the API. If it does not exist,
 // it will be created. If it does exist, the metadata of the required
@@ -47,15 +86,22 @@ func ApplyMutatingWebhookConfiguration(client dynamic.Interface, recorder events
 func ApplyValidatingWebhookConfiguration(client dynamic.Interface, recorder events.Recorder,
 	requiredOriginal *admissionregistrationv1.ValidatingWebhookConfiguration, expectedGeneration int64) (*admissionregistrationv1.ValidatingWebhookConfiguration, bool, error) {
 
+	gvr := admissionregistrationv1.SchemeGroupVersion.WithResource("validatingwebhookconfigurations")
+	resourcedClient := client.Resource(gvr)
+
+	required := requiredOriginal.DeepCopy()
+	if err := copyValidatingWebhookCABundle(resourcedClient, required); err != nil {
+		return nil, false, err
+	}
+
 	// Explcitily specify type for requiredUnstr to get object meta accessor
 	requiredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(requiredOriginal)
 	if err != nil {
 		return nil, false, err
 	}
 
-	gvr := admissionregistrationv1.SchemeGroupVersion.WithResource("validatingwebhookconfigurations")
 	requiredUnstr := &unstructured.Unstructured{Object: requiredObj}
-	resourcedClient := client.Resource(gvr)
+
 	actualUnstr, modified, err := applyUnstructured(resourcedClient, "ValidatingWebhookConfiguration", recorder, requiredUnstr, expectedGeneration)
 	if err != nil {
 		return nil, modified, err
@@ -66,4 +112,33 @@ func ApplyValidatingWebhookConfiguration(client dynamic.Interface, recorder even
 		return nil, modified, err
 	}
 	return actual, modified, nil
+}
+
+func copyValidatingWebhookCABundle(resourceClient dynamic.ResourceInterface, required *admissionregistrationv1.ValidatingWebhookConfiguration) error {
+	existingUnstr, err := resourceClient.Get(context.TODO(), required.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	existing := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(existingUnstr.Object, existing); err != nil {
+		return err
+	}
+
+	existingValidatingWebhooks := make(map[string]admissionregistrationv1.ValidatingWebhook)
+	for _, mutatingWebhook := range existing.Webhooks {
+		existingValidatingWebhooks[mutatingWebhook.Name] = mutatingWebhook
+	}
+
+	webhooks := make([]admissionregistrationv1.ValidatingWebhook, len(required.Webhooks))
+	for i, mutatingWebhook := range required.Webhooks {
+		if webhook, ok := existingValidatingWebhooks[mutatingWebhook.Name]; ok {
+			mutatingWebhook.ClientConfig.CABundle = webhook.ClientConfig.CABundle
+		}
+		webhooks[i] = mutatingWebhook
+	}
+	required.Webhooks = webhooks
+	return nil
 }
