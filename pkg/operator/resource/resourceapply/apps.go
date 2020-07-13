@@ -56,16 +56,18 @@ const specHashAnnotation = "operator.openshift.io/spec-hash"
 // hash on the provided ObjectMeta. This method is used internally by Apply<type> methods, and
 // is exposed to support testing with fake clients that need to know the mutated form of the
 // resource resulting from an Apply<type> call.
-func SetSpecHashAnnotation(objMeta *metav1.ObjectMeta, spec interface{}) error {
+func SetSpecHashAnnotation(objMeta metav1.Object, spec interface{}) error {
 	jsonBytes, err := json.Marshal(spec)
 	if err != nil {
 		return err
 	}
 	specHash := fmt.Sprintf("%x", sha256.Sum256(jsonBytes))
-	if objMeta.Annotations == nil {
-		objMeta.Annotations = map[string]string{}
+	annotations := objMeta.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
 	}
-	objMeta.Annotations[specHashAnnotation] = specHash
+	annotations[specHashAnnotation] = specHash
+	objMeta.SetAnnotations(annotations)
 	return nil
 }
 
