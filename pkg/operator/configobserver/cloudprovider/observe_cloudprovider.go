@@ -11,6 +11,7 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 	configlistersv1 "github.com/openshift/client-go/config/listers/config/v1"
+	"github.com/openshift/library-go/pkg/cloudprovider"
 	"github.com/openshift/library-go/pkg/operator/configobserver"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/resourcesynccontroller"
@@ -26,6 +27,7 @@ const (
 // InfrastructureLister lists infrastrucre information and allows resources to be synced
 type InfrastructureLister interface {
 	InfrastructureLister() configlistersv1.InfrastructureLister
+	FeatureGateLister() configlistersv1.FeatureGateLister
 	ResourceSyncer() resourcesynccontroller.ResourceSyncer
 	ConfigMapLister() corelisterv1.ConfigMapLister
 }
@@ -66,8 +68,24 @@ func (c *cloudProviderObserver) ObserveCloudProviderNames(genericListers configo
 		return existingConfig, append(errs, err)
 	}
 
+	external, err := c.isCloudProviderExternal(listers, infrastructure.Status.Platform, recorder)
+	if err != nil {
+		recorder.Eventf("ObserveCloudProviderNames", "Could not determine external cloud provider state: %v", err)
+		return existingConfig, append(errs, err)
+	}
+
+	// Still using in-tree cloud provider, fall back to setting provider information based on platform type.
 	cloudProvider := getPlatformName(infrastructure.Status.Platform, recorder)
-	if len(cloudProvider) > 0 {
+	if external {
+		if err := unstructured.SetNestedStringSlice(observedConfig, []string{"external"}, c.cloudProviderNamePath...); err != nil {
+			errs = append(errs, err)
+		}
+		// Do not return here. We must still synchronise the cloud-conf configmap as part of
+		// this observation to preserve the legacy behaviour. The cloud-conf may still be used
+		// by other components when external cloud providers are set.
+		// TODO: Migrate the cloud-conf synchronisation to an appropriate controller and remove
+		// side effects from this config observer.
+	} else if len(cloudProvider) > 0 {
 		if err := unstructured.SetNestedStringSlice(observedConfig, []string{cloudProvider}, c.cloudProviderNamePath...); err != nil {
 			errs = append(errs, err)
 		}
@@ -115,6 +133,11 @@ func (c *cloudProviderObserver) ObserveCloudProviderNames(genericListers configo
 		return observedConfig, errs
 	}
 
+	if external {
+		// Do not set the cloud provider config flag for external configuration
+		return observedConfig, errs
+	}
+
 	staticCloudConfFile := fmt.Sprintf(cloudProviderConfFilePath, sourceCloudConfigKey)
 
 	if err := unstructured.SetNestedStringSlice(observedConfig, []string{staticCloudConfFile}, c.cloudProviderConfigPath...); err != nil {
@@ -133,6 +156,27 @@ func (c *cloudProviderObserver) ObserveCloudProviderNames(genericListers configo
 	}
 
 	return observedConfig, errs
+}
+
+// isCloudProviderExternal is used to determine if the cluster should use external cloud providers.
+// Currently, this is opt in via a feature gate. If no feature gate is present, the cluster should remain
+// using the in-tree implementation.
+func (c *cloudProviderObserver) isCloudProviderExternal(listers InfrastructureLister, platform configv1.PlatformType, recorder events.Recorder) (bool, error) {
+	featureGate, err := listers.FeatureGateLister().Get("cluster")
+	if errors.IsNotFound(err) {
+		// No feature gate is set, therefore cannot be external.
+		// This is not an error as the feature gate is an optional resource.
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("could not fetch featuregate: %v", err)
+	}
+
+	external, err := cloudprovider.IsCloudProviderExternal(platform, featureGate)
+	if err != nil {
+		return false, fmt.Errorf("could not determine if cloud provider is external from featuregate: %v", err)
+	}
+
+	return external, nil
 }
 
 func getPlatformName(platformType configv1.PlatformType, recorder events.Recorder) string {
