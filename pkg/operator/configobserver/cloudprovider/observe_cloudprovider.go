@@ -80,11 +80,6 @@ func (c *cloudProviderObserver) ObserveCloudProviderNames(genericListers configo
 		if err := unstructured.SetNestedStringSlice(observedConfig, []string{"external"}, c.cloudProviderNamePath...); err != nil {
 			errs = append(errs, err)
 		}
-		// Do not return here. We must still synchronise the cloud-conf configmap as part of
-		// this observation to preserve the legacy behaviour. The cloud-conf may still be used
-		// by other components when external cloud providers are set.
-		// TODO: Migrate the cloud-conf synchronisation to an appropriate controller and remove
-		// side effects from this config observer.
 	} else if len(cloudProvider) > 0 {
 		if err := unstructured.SetNestedStringSlice(observedConfig, []string{cloudProvider}, c.cloudProviderNamePath...); err != nil {
 			errs = append(errs, err)
@@ -130,11 +125,6 @@ func (c *cloudProviderObserver) ObserveCloudProviderNames(genericListers configo
 	}
 
 	if len(sourceCloudConfigMap) == 0 {
-		return observedConfig, errs
-	}
-
-	if external {
-		// Do not set the cloud provider config flag for external configuration
 		return observedConfig, errs
 	}
 
